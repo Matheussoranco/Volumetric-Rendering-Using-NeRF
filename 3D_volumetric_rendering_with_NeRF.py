@@ -32,5 +32,5 @@ im_shape = images.shape
 (num_images, H, W, _) = images.shape
 (poses, focal) = (data["poses"], data["focal"])
 
-plt.imshow(images[np.random.randit(low=0, high=num_images)])
+plt.imshow(images[np.random.randint(low=0, high=num_images)])
 plt.show()
