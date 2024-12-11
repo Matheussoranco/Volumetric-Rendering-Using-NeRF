@@ -34,3 +34,19 @@ im_shape = images.shape
 
 plt.imshow(images[np.random.randint(low=0, high=num_images)])
 plt.show()
+
+def encode_position():
+    """
+    Codifica a posição em seu recurso de Fourier correspondente.
+
+    Argumentos:
+        x: A coordenada de entrada.
+
+    Retorna:
+        Fourier apresenta tensores de posição.
+    """
+    positions = [x]
+    for i in range(POS_ENCODE_DIMS):
+        for fn in [tf.sin, tf.cos]:
+            positions.append(fn(2.0**i * x))
+    return tf.concat(positions, axis=-1)
