@@ -110,3 +110,31 @@ def render_flat_rays(ray_origins, ray_directions, near, far, num_samples, rand=F
     rays_flat = tf.reshape(rays, [-1, 3])
     rays_flat = encode_position(rays_flat)
     return (rays_flat, t_vals)
+
+split_index = int(num_images * 0.8)
+
+train_images = images[:split_index]
+val_images = images[split_index:]
+
+train_poses = poses[:split_index]
+val_poses = poses[split_index:]
+
+train_img_ds = tf.data.Dataset.from_tensor_slices(train_images)
+train_pose_ds = tf.data.Dataset.from_tensor_slices(train_poses)
+train_ray_ds = train_pose_ds.map(map_fn, num_parallel_calls=AUTO)
+training_ds = tf.data.Dataset.zip((train_img_ds, train_ray_ds))
+train_ds = (
+    training_ds.shuffle(BATCH_SIZE)
+    .batch(BATCH_SIZE, drop_remainder=True, num_parallel_calls=AUTO)
+    .prefetch(AUTO)
+)
+
+val_img_ds = tf.data.Dataset.from_tensor_slices(val_images)
+val_pose_ds = tf.data.Dataset.from_tensor_slices(val_poses)
+val_ray_ds = val_pose_ds.map(map_fn, num_parallel_calls=AUTO)
+validation_ds = tf.data.Dataset.zip((val_img_ds, val_ray_ds))
+val_ds = (
+    validation_ds.shuffle(BATCH_SIZE)
+    .batch(BATCH_SIZE, drop_remainder=True, num_parallel_calls=AUTO)
+    .prefetch(AUTO)
+)
