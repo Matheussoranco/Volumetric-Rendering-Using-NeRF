@@ -111,6 +111,27 @@ def render_flat_rays(ray_origins, ray_directions, near, far, num_samples, rand=F
     rays_flat = encode_position(rays_flat)
     return (rays_flat, t_vals)
 
+def map_fn(pose):
+    """Mapeia a pose individual para raios achatados e pontos de amostra.
+
+    Argumentos:
+        pose: A matriz de pose da câmera.
+
+    Retorna:
+        Tupla de raios achatados e pontos de amostra correspondentes ao
+        pose de câmera.
+    """
+    (ray_origins, ray_directions) = get_rays(height=H, width=W, focal=focal, pose=pose)
+    (rays_flat, t_vals) = render_flat_rays(
+        ray_origins=ray_origins,
+        ray_directions=ray_directions,
+        near=2.0,
+        far=6.0,
+        num_samples=NUM_SAMPLES,
+        rand=True,
+    )
+    return (rays_flat, t_vals)
+
 split_index = int(num_images * 0.8)
 
 train_images = images[:split_index]
@@ -138,3 +159,72 @@ val_ds = (
     .batch(BATCH_SIZE, drop_remainder=True, num_parallel_calls=AUTO)
     .prefetch(AUTO)
 )
+
+def get_nerf_model(num_layers, num_pos):
+    """
+    Gera a rede neural NeRF.
+
+    Argumentos:
+        num_layers: O número de camadas MLP.
+        num_pos: o número de dimensões da codificação posicional.
+
+    Retorna:
+        O modelo `keras`.
+    """
+    inputs = keras.Input(shape=(num_pos, 2 * 3 * POS_ENCODE_DIMS + 3))
+    x = inputs
+    for i in range(num_layers):
+        x = layers.Dense(units=64, activation="relu")(x)
+        if i % 4 == 0 and i > 0:
+            x = layers.concatenate([x, inputs], axis=-1)
+    outputs = layers.Dense(units=4)(x)
+    return keras.Model(inputs=inputs, outputs=outputs)
+
+def render_rgb_depth(model, rays_flat, t_vals, rand=True, train=True):
+    """
+    Gera a imagem RGB e o mapa de profundidade a partir da previsão do modelo.
+
+    Argumentos:
+        modelo: O modelo MLP que é treinado para prever o rgb e
+            densidade de volume da cena volumétrica.
+        rays_flat: Os raios achatados que servem como entrada para
+            o modelo NeRF.
+        t_vals: Os pontos de amostra para os raios.
+        rand: Escolha para randomizar a estratégia de amostragem.
+        treinar: se o modelo está em fase de treinamento ou teste.
+
+    Retorna:
+        Tupla de imagem RGB e mapa de profundidade.
+    """
+    if train:
+        predictions = model(rays_flat)
+    else:
+        predictions = model.predict(rays_flat)
+    predictions = tf.reshape(predictions, shape=(BATCH_SIZE, H, W, NUM_SAMPLES, 4))
+    
+    rgb = tf.sigmoid(predictions[..., :-1])
+    sigma_a = tf.nn.relu(predictions[..., -1])
+
+    delta = t_vals[..., 1:] - t_vals[..., :-1]
+    if rand:
+        delta = tf.concat(
+            [delta, tf.broadcast_to([1e10], shape=(BATCH_SIZE, H, W, 1))], axis=-1
+        )
+        alpha = 1.0 - tf.exp(-sigma_a * delta)
+    else:
+        delta = tf.concat(
+            [delta, tf.broadcast_to([1e10], shape=(BATCH_SIZE, 1))], axis=-1
+        )
+        alpha = 1.0 - tf.exp(-sigma_a * delta[:, None, None, :])
+    
+    exp_term = 1.0 - alpha
+    epsilon = 1e-10
+    transmittance = tf.math.cumprod(exp_term + epsilon, axis=-1, exclusive=True)
+    weights = alpha * transmittance
+    rgb = tf.reduce_sum(weights * t_vals, axis=-2)
+    
+    if rand:
+        depth_map = tf.reduce_sum(weights * t_vals, axis=-1)
+    else:
+        depth_map = tf.reduce_sum(weights * t_vals[:, None, None], axis=-1)
+    return(rgb, depth_map)        
