@@ -74,7 +74,7 @@ def get_rays(height, width, focal, pose):
     directions = tf.stack([transformed_i, -transformed_j, -tf.ones_like(i)], axis=-1)
     
     camera_matrix = pose[:3, :3]
-    height_width_focal = pose[:3. -1]
+    height_width_focal = pose[:3, -1]
     
     transformed_dirs = directions[..., None, :]
     camera_dirs = transformed_dirs * camera_matrix
