@@ -35,7 +35,7 @@ im_shape = images.shape
 plt.imshow(images[np.random.randint(low=0, high=num_images)])
 plt.show()
 
-def encode_position():
+def encode_position(x):
     """
     Codifica a posição em seu recurso de Fourier correspondente.
 
