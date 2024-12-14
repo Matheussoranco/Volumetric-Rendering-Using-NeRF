@@ -340,3 +340,26 @@ def create_gif(path_to_images, name_gif):
 
 
 create_gif("images/*.png", "training.gif")
+
+nerf_model = model.nerf_model
+test_recons_images, depth_maps = render_rgb_depth(
+    model=nerf_model,
+    rays_flat=test_rays_flat,
+    t_vals=test_t_vals,
+    rand=True,
+    train=False,
+)
+
+fig, axes = plt.subplots(nrows=5, ncols=3, figsize=(10, 20))
+
+for ax, ori_img, recons_img, depth_map in zip(
+    axes, test_imgs, test_recons_images, depth_maps
+):
+    ax[0].imshow(keras.utils.array_to_img(ori_img))
+    ax[0].set_title("Original")
+
+    ax[1].imshow(keras.utils.array_to_img(recons_img))
+    ax[1].set_title("Reconstructed")
+
+    ax[2].imshow(keras.utils.array_to_img(depth_map[..., None]), cmap="inferno")
+    ax[2].set_title("Depth Map")
