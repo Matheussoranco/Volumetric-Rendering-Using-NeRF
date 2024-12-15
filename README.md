@@ -4,9 +4,9 @@ The quetion is: would it be possible to give to a neural network the position of
 
 Still Editing...
 
+## Sources and References
+- [Keras: NeRF Example](https://keras.io/examples/vision/nerf/)  
+- [Official NeRF GitHub Repository](https://github.com/bmild/nerf)  
+- [MathWorks: Camera Calibration](https://www.mathworks.com/help/vision/ug/camera-calibration.html)  
+- [Original Paper on ArXiv](https://arxiv.org/abs/2003.08934)  
 
-Sources and references:
-https://keras.io/examples/vision/nerf/
-https://github.com/bmild/nerf
-https://www.mathworks.com/help/vision/ug/camera-calibration.html
-https://arxiv.org/abs/2003.08934
