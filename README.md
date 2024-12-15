@@ -3,3 +3,10 @@ This isa  minimal implementation of the research paper NeRF: Representing Scenes
 The quetion is: would it be possible to give to a neural network the position of a pixel in an image, and ask the network to predict the color at that position?
 
 Still Editing...
+
+
+Sources and references:
+https://keras.io/examples/vision/nerf/
+https://github.com/bmild/nerf
+https://www.mathworks.com/help/vision/ug/camera-calibration.html
+https://arxiv.org/abs/2003.08934
