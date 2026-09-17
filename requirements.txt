@@ -1,11 +1,10 @@
-# NeRF is version-fragile: the model mixes low-level tf ops with the Keras API,
-# and the script uses the standalone `import keras` idiom (Keras 3), which
-# resolves to Keras 3 only on TensorFlow 2.16+. Pins below reflect that family.
-# If you re-run and regenerate the committed outputs, freeze these to the exact
-# versions that reproduced them.
-tensorflow>=2.16,<2.20
-keras>=3.0,<4.0
-numpy>=1.24
-imageio>=2.31
-tqdm>=4.66
-matplotlib>=3.8
+# Frozen study stack — NeRF over tiny_nerf_data. See README.
+# Pins exatos (==) como no VAE: ranges abertos quebravam entre TF 2.16/Keras 3
+# (import keras standalone) e numpy 2.x. Se re-rodar e regenerar outputs,
+# congele nas versões exatas que reproduziram.
+tensorflow==2.19.0
+keras==3.8.0
+numpy==1.26.4
+imageio==2.36.1
+tqdm==4.67.1
+matplotlib==3.8.4

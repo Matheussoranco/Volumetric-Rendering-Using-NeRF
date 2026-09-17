@@ -1,3 +1,4 @@
+"""Study script — executes dataset download + training on import/run. Do not import as a library."""
 import os
 
 os.environ["KERAS_BACKEND"] = "tensorflow"
@@ -22,9 +23,9 @@ POS_ENCODE_DIMS = 16
 EPOCHS = 20
 
 url = (
-    "http://cseweb.ucsd.edu/~viscomp/projects/LF/papers/ECCV20/nerf/tiny_nerf_data.npz"
+    "https://cseweb.ucsd.edu/~viscomp/projects/LF/papers/ECCV20/nerf/tiny_nerf_data.npz"
 )
-data = keras.utils.get_file(origin=url)
+data = keras.utils.get_file(fname="tiny_nerf_data.npz", origin=url)
 
 data = np.load(data)
 images = data["images"]
@@ -145,8 +146,8 @@ train_pose_ds = tf.data.Dataset.from_tensor_slices(train_poses)
 train_ray_ds = train_pose_ds.map(map_fn, num_parallel_calls=AUTO)
 training_ds = tf.data.Dataset.zip((train_img_ds, train_ray_ds))
 train_ds = (
-    training_ds.shuffle(BATCH_SIZE)
-    .batch(BATCH_SIZE, drop_remainder=True, num_parallel_calls=AUTO)
+    training_ds.shuffle(1024)
+    .batch(BATCH_SIZE, drop_remainder=True)
     .prefetch(AUTO)
 )
 
@@ -155,23 +156,27 @@ val_pose_ds = tf.data.Dataset.from_tensor_slices(val_poses)
 val_ray_ds = val_pose_ds.map(map_fn, num_parallel_calls=AUTO)
 validation_ds = tf.data.Dataset.zip((val_img_ds, val_ray_ds))
 val_ds = (
-    validation_ds.shuffle(BATCH_SIZE)
-    .batch(BATCH_SIZE, drop_remainder=True, num_parallel_calls=AUTO)
+    validation_ds.shuffle(1024)
+    .batch(BATCH_SIZE, drop_remainder=True)
     .prefetch(AUTO)
 )
 
-def get_nerf_model(num_layers, num_pos):
+def get_nerf_model(num_layers, num_pos=None, input_dim=None):
     """
     Gera a rede neural NeRF.
 
     Argumentos:
         num_layers: O número de camadas MLP.
-        num_pos: o número de dimensões da codificação posicional.
+        num_pos: legado (H*W*N) — ignorado; mantido por compatibilidade.
+            O modelo opera por ponto 3D codificado, não sobre a sequência
+            gigante (H*W*N, 99) que causava OOM.
+        input_dim: dimensão do ponto codificado (padrão 2*3*POS_ENCODE_DIMS+3 = 99).
 
     Retorna:
-        O modelo `keras`.
+        O modelo `keras` com Input(shape=(input_dim,)) por ponto.
     """
-    inputs = keras.Input(shape=(num_pos, 2 * 3 * POS_ENCODE_DIMS + 3))
+    feat_dim = input_dim or (2 * 3 * POS_ENCODE_DIMS + 3)
+    inputs = keras.Input(shape=(feat_dim,))
     x = inputs
     for i in range(num_layers):
         x = layers.Dense(units=64, activation="relu")(x)
@@ -196,32 +201,36 @@ def render_rgb_depth(model, rays_flat, t_vals, rand=True, train=True):
     Retorna:
         Tupla de imagem RGB e mapa de profundidade.
     """
+    # O modelo opera por ponto (99,) — achata dims líderes (B, N, 99)
+    # para (-1, 99), roda o MLP, e restaura (B, N, 4). Evita Input gigante
+    # (num_pos=H*W*N, 99) que causava OOM.
+    rays_shape = tf.shape(rays_flat)
+    rays_2d = tf.reshape(rays_flat, [-1, rays_shape[-1]])
     if train:
-        predictions = model(rays_flat)
+        pred_2d = model(rays_2d)
     else:
-        predictions = model.predict(rays_flat)
-    predictions = tf.reshape(predictions, shape=(BATCH_SIZE, H, W, NUM_SAMPLES, 4))
+        pred_2d = tf.convert_to_tensor(model.predict(rays_2d, verbose=0))
+    predictions = tf.reshape(
+        pred_2d, tf.concat([rays_shape[:-1], [4]], axis=0)
+    )
+    batch_dyn = tf.shape(predictions)[0] // (H * W * NUM_SAMPLES)
+    predictions = tf.reshape(predictions, shape=(batch_dyn, H, W, NUM_SAMPLES, 4))
     
     rgb = tf.sigmoid(predictions[..., :-1])
     sigma_a = tf.nn.relu(predictions[..., -1])
 
     delta = t_vals[..., 1:] - t_vals[..., :-1]
-    if rand:
-        delta = tf.concat(
-            [delta, tf.broadcast_to([1e10], shape=(BATCH_SIZE, H, W, 1))], axis=-1
-        )
-        alpha = 1.0 - tf.exp(-sigma_a * delta)
-    else:
-        delta = tf.concat(
-            [delta, tf.broadcast_to([1e10], shape=(BATCH_SIZE, 1))], axis=-1
-        )
-        alpha = 1.0 - tf.exp(-sigma_a * delta[:, None, None, :])
+    # Tail [1e10] broadcast dinamicamente para o batch real (suporta resto).
+    tail_shape = tf.concat([tf.shape(delta)[:-1], [1]], axis=0)
+    tail = tf.broadcast_to(tf.cast(1e10, delta.dtype), tail_shape)
+    delta = tf.concat([delta, tail], axis=-1)
+    alpha = 1.0 - tf.exp(-sigma_a * delta)
     
     exp_term = 1.0 - alpha
     epsilon = 1e-10
     transmittance = tf.math.cumprod(exp_term + epsilon, axis=-1, exclusive=True)
     weights = alpha * transmittance
-    rgb = tf.reduce_sum(weights * t_vals, axis=-2)
+    rgb = tf.reduce_sum(weights[..., None] * rgb, axis=-2)
     
     if rand:
         depth_map = tf.reduce_sum(weights * t_vals, axis=-1)
@@ -277,9 +286,6 @@ class NeRF(keras.Model):
     def metrics(self):
         return[self.loss_tracker, self.psnr_metric]
     
-test_imgs, test_rays = next(iter(train_ds))
-test_rays_flat, test_t_vals = test_rays
-
 loss_list = []
 
 class TrainMonitor(keras.callbacks.Callback):
@@ -308,61 +314,6 @@ class TrainMonitor(keras.callbacks.Callback):
         fig.savefig(f"images/{epoch:03d}.png")
         plt.show()
         plt.close()
-
-num_pos = H * W * NUM_SAMPLES
-nerf_model = get_nerf_model(num_layers=8, num_pos=num_pos)
-
-model = NeRF(nerf_model)
-model.compile(
-    optimizer=keras.optimizers.Adam(), loss_fn=keras.losses.MeanSquaredError()
-)
-
-if not os.path.exists("images"):
-    os.makedirs("images")
-
-model.fit(
-    train_ds,
-    validation_data=val_ds,
-    batch_size=BATCH_SIZE,
-    epochs=EPOCHS,
-    callbacks=[TrainMonitor()],
-)
-
-
-def create_gif(path_to_images, name_gif):
-    filenames = glob.glob(path_to_images)
-    filenames = sorted(filenames)
-    images = []
-    for filename in tqdm(filenames):
-        images.append(imageio.imread(filename))
-    kargs = {"duration": 0.25}
-    imageio.mimsave(name_gif, images, "GIF", **kargs)
-
-
-create_gif("images/*.png", "training.gif")
-
-nerf_model = model.nerf_model
-test_recons_images, depth_maps = render_rgb_depth(
-    model=nerf_model,
-    rays_flat=test_rays_flat,
-    t_vals=test_t_vals,
-    rand=True,
-    train=False,
-)
-
-fig, axes = plt.subplots(nrows=5, ncols=3, figsize=(10, 20))
-
-for ax, ori_img, recons_img, depth_map in zip(
-    axes, test_imgs, test_recons_images, depth_maps
-):
-    ax[0].imshow(keras.utils.array_to_img(ori_img))
-    ax[0].set_title("Original")
-
-    ax[1].imshow(keras.utils.array_to_img(recons_img))
-    ax[1].set_title("Reconstructed")
-
-    ax[2].imshow(keras.utils.array_to_img(depth_map[..., None]), cmap="inferno")
-    ax[2].set_title("Depth Map")
 
 def get_translation_t(t):
     """Obtenha a matriz de tradução para movimento em t."""
@@ -409,36 +360,101 @@ e t.
     return c2w
 
 
-rgb_frames = []
-batch_flat = []
-batch_t = []
+def create_gif(path_to_images, name_gif):
+    filenames = glob.glob(path_to_images)
+    filenames = sorted(filenames)
+    images = []
+    for filename in tqdm(filenames):
+        images.append(imageio.imread(filename))
+    kargs = {"duration": 0.25}
+    imageio.mimsave(name_gif, images, "GIF", **kargs)
 
-for index, theta in tqdm(enumerate(np.linspace(0.0, 360.0, 120, endpoint=False))):
-    c2w = pose_spherical(theta, -30.0, 4.0)
 
-    #
-    ray_oris, ray_dirs = get_rays(H, W, focal, c2w)
-    rays_flat, t_vals = render_flat_rays(
-        ray_oris, ray_dirs, near=2.0, far=6.0, num_samples=NUM_SAMPLES, rand=False
+def main():
+    global test_imgs, test_rays, test_rays_flat, test_t_vals
+    test_imgs, test_rays = next(iter(val_ds))
+    test_rays_flat, test_t_vals = test_rays
+
+    nerf_model = get_nerf_model(num_layers=8)
+
+    model = NeRF(nerf_model)
+    model.compile(
+        optimizer=keras.optimizers.Adam(), loss_fn=keras.losses.MeanSquaredError()
     )
 
-    if index % BATCH_SIZE == 0 and index > 0:
+    if not os.path.exists("images"):
+        os.makedirs("images")
+
+    model.fit(
+        train_ds,
+        validation_data=val_ds,
+        batch_size=BATCH_SIZE,
+        epochs=EPOCHS,
+        callbacks=[TrainMonitor()],
+    )
+
+    create_gif("images/*.png", "training.gif")
+
+    nerf_model_trained = model.nerf_model
+    test_recons_images, depth_maps = render_rgb_depth(
+        model=nerf_model_trained,
+        rays_flat=test_rays_flat,
+        t_vals=test_t_vals,
+        rand=True,
+        train=False,
+    )
+
+    fig, axes = plt.subplots(nrows=5, ncols=3, figsize=(10, 20))
+
+    for ax, ori_img, recons_img, depth_map in zip(
+        axes, test_imgs, test_recons_images, depth_maps
+    ):
+        ax[0].imshow(keras.utils.array_to_img(ori_img))
+        ax[0].set_title("Original")
+
+        ax[1].imshow(keras.utils.array_to_img(recons_img))
+        ax[1].set_title("Reconstructed")
+
+        ax[2].imshow(keras.utils.array_to_img(depth_map[..., None]), cmap="inferno")
+        ax[2].set_title("Depth Map")
+
+    render_video(nerf_model_trained)
+
+
+def render_video(nerf_model):
+    rgb_frames = []
+    batch_flat = []
+    batch_t = []
+
+    def _flush():
+        if not batch_flat:
+            return
         batched_flat = tf.stack(batch_flat, axis=0)
-        batch_flat = [rays_flat]
-
         batched_t = tf.stack(batch_t, axis=0)
-        batch_t = [t_vals]
-
         rgb, _ = render_rgb_depth(
             nerf_model, batched_flat, batched_t, rand=False, train=False
         )
-
         temp_rgb = [np.clip(255 * img, 0.0, 255.0).astype(np.uint8) for img in rgb]
+        rgb_frames.extend(temp_rgb)
+        batch_flat.clear()
+        batch_t.clear()
 
-        rgb_frames = rgb_frames + temp_rgb
-    else:
+    for index, theta in tqdm(enumerate(np.linspace(0.0, 360.0, 120, endpoint=False))):
+        c2w = pose_spherical(theta, -30.0, 4.0)
+        ray_oris, ray_dirs = get_rays(H, W, focal, c2w)
+        rays_flat, t_vals = render_flat_rays(
+            ray_oris, ray_dirs, near=2.0, far=6.0, num_samples=NUM_SAMPLES, rand=False
+        )
         batch_flat.append(rays_flat)
         batch_t.append(t_vals)
+        if len(batch_flat) >= BATCH_SIZE:
+            _flush()
+    # Não perde o resto: processa o lote parcial final.
+    _flush()
 
-rgb_video = "rgb_video.mp4"
-imageio.mimwrite(rgb_video, rgb_frames, fps=30, quality=7, macro_block_size=None)
+    rgb_video = "rgb_video.mp4"
+    imageio.mimwrite(rgb_video, rgb_frames, fps=30, quality=7, macro_block_size=None)
+
+
+if __name__ == "__main__":
+    main()
